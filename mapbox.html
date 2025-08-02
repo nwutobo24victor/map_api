@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Improved Map Implementation</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+    <style>
+        #map {
+            width: 100%;
+            height: 500px;
+        }
+        #pickup-suggestions, #destination-suggestions {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            z-index: 10;
+        }
+        #pickup-suggestions div, #destination-suggestions div {
+            padding: 8px;
+            cursor: pointer;
+        }
+        #pickup-suggestions div:hover, #destination-suggestions div:hover {
+            background: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <input type="text" id="pickup" placeholder="Enter pickup location" />
+    <div id="pickup-suggestions"></div>
+    <input type="text" id="destination" placeholder="Enter destination location" />
+    <div id="destination-suggestions"></div>
+    <div id="map"></div>
+    <p id="distance"></p>
+    <p id="time"></p>
+
+    <script>
+        const mapboxToken = "pk.eyJ1IjoiZHJjaGFybGVzIiwiYSI6ImNtM2l6b2FwaTA3OXAya3NlZjJnc3dscG8ifQ.e5yKPn_0RiTYlbojm51DkA"; // Replace with your Mapbox token
+        const openCageKey = "92955c580ec846cd814810cb021adfea"; // Replace with your OpenCage API key
+        let map, pickupMarker, destinationMarker, routeLine;
+
+        $(document).ready(function () {
+            // Initialize Mapbox map
+            mapboxgl.accessToken = mapboxToken;
+            map = new mapboxgl.Map({
+                container: 'map',
+                style: 'mapbox://styles/mapbox/streets-v11',
+                center: [8.6753, 9.0820], // Nigeria
+                zoom: 6
+            });
+
+            // Event listeners for input fields
+            $('#pickup').on('keyup', function () {
+                const query = $(this).val();
+                if (query.length > 2) {
+                    performSearch(query, 'pickup');
+                } else {
+                    $('#pickup-suggestions').hide();
+                }
+            });
+
+            $('#destination').on('keyup', function () {
+                const query = $(this).val();
+                if (query.length > 2) {
+                    performSearch(query, 'destination');
+                } else {
+                    $('#destination-suggestions').hide();
+                }
+            });
+        });
+
+        function performSearch(query, type) {
+            const url = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(query)}&key=${openCageKey}&countrycode=NG&limit=10`;
+
+            $.getJSON(url, function (data) {
+                const suggestionsBox = (type === 'pickup') ? '#pickup-suggestions' : '#destination-suggestions';
+                $(suggestionsBox).empty().show();
+
+                if (data.results.length > 0) {
+                    data.results.forEach(function (result) {
+                        const displayName = result.formatted;
+                        const lat = result.geometry.lat;
+                        const lon = result.geometry.lng;
+                        $(suggestionsBox).append(`<div data-lat="${lat}" data-lon="${lon}">${displayName}</div>`);
+                    });
+                } else {
+                    $(suggestionsBox).append('<div>No results found</div>');
+                }
+            });
+        }
+
+        $('#pickup-suggestions').on('click', 'div', function () {
+            const selectedAddress = $(this).text();
+            const lat = $(this).data('lat');
+            const lon = $(this).data('lon');
+            $('#pickup').val(selectedAddress);
+            $('#pickup-suggestions').hide();
+            displayMarker(lat, lon, 'pickup');
+        });
+
+        $('#destination-suggestions').on('click', 'div', function () {
+            const selectedAddress = $(this).text();
+            const lat = $(this).data('lat');
+            const lon = $(this).data('lon');
+            $('#destination').val(selectedAddress);
+            $('#destination-suggestions').hide();
+            displayMarker(lat, lon, 'destination');
+        });
+
+        function displayMarker(lat, lon, type) {
+            const position = [lon, lat];
+
+            if (type === 'pickup') {
+                if (pickupMarker) pickupMarker.remove();
+                pickupMarker = new mapboxgl.Marker({ color: 'blue', draggable: true }).setLngLat(position).addTo(map);
+                map.flyTo({ center: position, zoom: 14 });
+
+                pickupMarker.on('dragend', function () {
+                    const coords = pickupMarker.getLngLat();
+                    reverseGeocode(coords.lat, coords.lng, 'pickup');
+                    calculateDistance();
+                    drawRoute();
+                });
+            } else if (type === 'destination') {
+                if (destinationMarker) destinationMarker.remove();
+                destinationMarker = new mapboxgl.Marker({ color: 'red', draggable: true }).setLngLat(position).addTo(map);
+                map.flyTo({ center: position, zoom: 14 });
+
+                destinationMarker.on('dragend', function () {
+                    const coords = destinationMarker.getLngLat();
+                    reverseGeocode(coords.lat, coords.lng, 'destination');
+                    calculateDistance();
+                    drawRoute();
+                });
+            }
+
+            calculateDistance();
+            drawRoute();
+        }
+
+        function reverseGeocode(lat, lon, type) {
+            const url = `https://api.opencagedata.com/geocode/v1/json?q=${lat}+${lon}&key=${openCageKey}`;
+
+            $.getJSON(url, function (data) {
+                if (data.results.length > 0) {
+                    const address = data.results[0].formatted;
+                    if (type === 'pickup') {
+                        $('#pickup').val(address);
+                    } else if (type === 'destination') {
+                        $('#destination').val(address);
+                    }
+                    calculateDistance();
+                    drawRoute();
+                }
+            });
+        }
+
+        function calculateDistance() {
+            if (pickupMarker && destinationMarker) {
+                const pickupPosition = pickupMarker.getLngLat();
+                const destinationPosition = destinationMarker.getLngLat();
+
+                const distance = turf.distance(
+                    [pickupPosition.lng, pickupPosition.lat],
+                    [destinationPosition.lng, destinationPosition.lat]
+                );
+
+                $('#distance').text(`Distance: ${distance.toFixed(2)} km`);
+                const averageSpeed = 50; // Average speed in km/h
+                const travelTime = (distance / averageSpeed) * 60; // Time in minutes
+                $('#time').text(`Estimated Time: ${travelTime.toFixed(2)} minutes`);
+            }
+        }
+
+        function drawRoute() {
+            if (pickupMarker && destinationMarker) {
+                const pickupPosition = pickupMarker.getLngLat();
+                const destinationPosition = destinationMarker.getLngLat();
+
+                const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${pickupPosition.lng},${pickupPosition.lat};${destinationPosition.lng},${destinationPosition.lat}?geometries=geojson&access_token=${mapboxToken}`;
+
+                $.getJSON(url, function (data) {
+                    if (routeLine) map.removeLayer(routeLine);
+
+                    const route = data.routes[0].geometry.coordinates;
+                    map.addSource('route', {
+                        type: 'geojson',
+                        data: {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: route
+                            }
+                        }
+                    });
+
+                    map.addLayer({
+                        id: 'route',
+                        type: 'line',
+                        source: 'route',
+                        paint: {
+                            'line-color': '#007aff',
+                            'line-width': 4
+                        }
+                    });
+                });
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HERE Maps Implementation</title>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-core.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-service.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-ui.js"></script>
+    <script src="https://js.api.here.com/v3/3.1/mapsjs-mapevents.js"></script>
+    <link rel="stylesheet" href="https://js.api.here.com/v3/3.1/mapsjs-ui.css" />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        #map {
+            width: 100%;
+            height: 500px;
+        }
+        #pickup-suggestions, #destination-suggestions {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            z-index: 10;
+        }
+        #pickup-suggestions div, #destination-suggestions div {
+            padding: 8px;
+            cursor: pointer;
+        }
+        #pickup-suggestions div:hover, #destination-suggestions div:hover {
+            background: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <input type="text" id="pickup" placeholder="Enter pickup location" />
+    <div id="pickup-suggestions"></div>
+    <input type="text" id="destination" placeholder="Enter destination location" />
+    <div id="destination-suggestions"></div>
+    <div id="map"></div>
+    <p id="distance"></p>
+    <p id="time"></p>
+
+    <script>
+        const hereApiKey = "mjDqW_8ZNU7U3bmCDfsVmemBAlOj6Wh227BeOJMCGjc"; // Replace with your HERE API key
+        let platform, map, ui, pickupMarker, destinationMarker, routingService;
+
+        $(document).ready(function () {
+            // Initialize HERE Map
+            platform = new H.service.Platform({ apikey: hereApiKey });
+            const defaultLayers = platform.createDefaultLayers();
+            const mapContainer = document.getElementById('map');
+
+            map = new H.Map(mapContainer, defaultLayers.vector.normal.map, {
+                center: { lat: 9.0820, lng: 8.6753 }, // Nigeria center
+                zoom: 6,
+                pixelRatio: window.devicePixelRatio || 1
+            });
+
+            // Enable map interaction
+            const mapEvents = new H.mapevents.MapEvents(map);
+            const behavior = new H.mapevents.Behavior(mapEvents);
+
+            // Enable default UI
+            ui = H.ui.UI.createDefault(map, defaultLayers);
+
+            // Routing service
+            routingService = platform.getRoutingService();
+
+            // Input event listeners
+            $('#pickup').on('keyup', function () {
+                const query = $(this).val();
+                if (query.length > 2) {
+                    performSearch(query, 'pickup');
+                } else {
+                    $('#pickup-suggestions').hide();
+                }
+            });
+
+            $('#destination').on('keyup', function () {
+                const query = $(this).val();
+                if (query.length > 2) {
+                    performSearch(query, 'destination');
+                } else {
+                    $('#destination-suggestions').hide();
+                }
+            });
+        });
+
+        function performSearch(query, type) {
+            const url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(query)}&apiKey=${hereApiKey}&in=countryCode:NGA`;
+
+            $.getJSON(url, function (data) {
+                const suggestionsBox = (type === 'pickup') ? '#pickup-suggestions' : '#destination-suggestions';
+                $(suggestionsBox).empty().show();
+
+                if (data.items.length > 0) {
+                    data.items.forEach(function (item) {
+                        const address = item.address.label;
+                        const lat = item.position.lat;
+                        const lng = item.position.lng;
+                        $(suggestionsBox).append(`<div data-lat="${lat}" data-lon="${lng}">${address}</div>`);
+                    });
+                } else {
+                    $(suggestionsBox).append('<div>No results found</div>');
+                }
+            });
+        }
+
+        $('#pickup-suggestions').on('click', 'div', function () {
+            const selectedAddress = $(this).text();
+            const lat = $(this).data('lat');
+            const lon = $(this).data('lon');
+            $('#pickup').val(selectedAddress);
+            $('#pickup-suggestions').hide();
+            addMarker(lat, lon, 'pickup');
+        });
+
+        $('#destination-suggestions').on('click', 'div', function () {
+            const selectedAddress = $(this).text();
+            const lat = $(this).data('lat');
+            const lon = $(this).data('lon');
+            $('#destination').val(selectedAddress);
+            $('#destination-suggestions').hide();
+            addMarker(lat, lon, 'destination');
+        });
+
+        function addMarker(lat, lon, type) {
+            const position = { lat, lng: lon };
+
+            if (type === 'pickup') {
+                if (pickupMarker) map.removeObject(pickupMarker);
+                pickupMarker = new H.map.Marker(position, { icon: createIcon('blue') });
+                map.addObject(pickupMarker);
+                map.setCenter(position);
+            } else if (type === 'destination') {
+                if (destinationMarker) map.removeObject(destinationMarker);
+                destinationMarker = new H.map.Marker(position, { icon: createIcon('red') });
+                map.addObject(destinationMarker);
+                map.setCenter(position);
+            }
+
+            calculateRoute();
+        }
+
+        function createIcon(color) {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}"><circle cx="12" cy="12" r="10" /></svg>`;
+            return new H.map.Icon(svg, { size: { w: 24, h: 24 } });
+        }
+
+        function calculateRoute() {
+            if (pickupMarker && destinationMarker) {
+                const pickupCoords = pickupMarker.getGeometry();
+                const destinationCoords = destinationMarker.getGeometry();
+
+                const routingParams = {
+                    transportMode: 'car',
+                    origin: `${pickupCoords.lat},${pickupCoords.lng}`,
+                    destination: `${destinationCoords.lat},${destinationCoords.lng}`,
+                    return: 'polyline,summary'
+                };
+
+                routingService.calculateRoute(routingParams, onRouteSuccess, onRouteError);
+            }
+        }
+
+        function onRouteSuccess(result) {
+            if (result.routes.length > 0) {
+                const route = result.routes[0];
+                const routeShape = route.sections[0].polyline;
+                const lineString = H.geo.LineString.fromFlexiblePolyline(routeShape);
+
+                const routeLine = new H.map.Polyline(lineString, {
+                    style: { strokeColor: '#007aff', lineWidth: 4 }
+                });
+
+                map.addObject(routeLine);
+
+                const summary = route.sections[0].summary;
+                const distance = (summary.length / 1000).toFixed(2); // km
+                const travelTime = (summary.duration / 60).toFixed(2); // minutes
+
+                $('#distance').text(`Distance: ${distance} km`);
+                $('#time').text(`Estimated Time: ${travelTime} minutes`);
+            }
+        }
+
+        function onRouteError(error) {
+            console.error('Routing error:', error);
+        }
+    </script>
+</body>
+</html>
